@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+
+# git-bank - store away diffs you reuse often
+
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+CYAN="\033[0;36m"
+DEFAULT="\033[0m"
+
+fail() {
+  echo -e "${RED}$*${DEFAULT}" >&2
+  exit 1
+}
+
+usage() {
+  echo "git bank <command> [<arguments>]"
+  echo "  ... save <name>     save the result of \`git diff\` to the bank"
+  echo "  ... apply <name>    apply a saved diff from the bank"
+  echo "  ... drop <name>     drop a diff from the bank"
+  echo "  ... list <name>     list all the diffs in the bank"
+  echo "  ... show <name>     show a diff in the bank"
+  echo "  ... help            show this help"
+  exit 0
+}
+
+# Find .git
+GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
+if (( $? != 0 )); then
+  fail Not in a working tree
+fi
+LEDGER_FILE=${GIT_DIR}/bank_ledger
+declare -A ledger
+if [[ -r ${LEDGER_FILE} ]]; then
+  source -- ${LEDGER_FILE} || fail Could not read ${LEDGER_FILE}
+fi
+
+command=$1
+if [[ -z $command ]]; then
+  usage
+fi
+
+readname() {
+  name=$2
+  if [[ -z $name ]]; then
+    echo -e "${RED}No name provided${DEFAULT}"
+    usage
+  fi
+}
+
+case $command in
+  save)
+    readname $@
+    hash=$(git diff | git hash-object -w --stdin)
+    tag="bank-${hash}"
+    git tag $tag $hash
+    ledger[$name]=$tag
+    declare -p ledger > $LEDGER_FILE
+    #git reset --hard HEAD
+    echo -e "${GREEN}Banked $name${DEFAULT}"
+    ;;
+  apply)
+    readname $@
+    tag=${ledger[$name]}
+    if [[ -z $tag ]]; then
+      fail Diff named $name not found
+    fi
+    git cat-file blob $tag | git apply || fail Failed to apply $name
+    echo -e "${CYAN}Applied $name${DEFAULT}"
+    ;;
+  drop)
+    readname $@
+    tag=${ledger[$name]}
+    if [[ -z $tag ]]; then
+      echo Diff named $name is already gone
+    else
+      git tag -d $tag >/dev/null 2>/dev/null
+      unset ledger[$name]
+      declare -p ledger > $LEDGER_FILE
+      echo -e "${CYAN}Dropped $name${DEFAULT}"
+    fi
+    ;;
+  list)
+    for name in "${!ledger[@]}"; do
+      echo -e "${CYAN}$name${DEFAULT} ${ledger[$name]}"
+    done
+    ;;
+  show)
+    name=$2
+    if [[ -z $name ]]; then
+      usage
+    fi
+    tag=${ledger[$name]}
+    if [[ -z $tag ]]; then
+      fail Diff named $name not found
+    fi
+    git cat-file blob $tag
+    ;;
+  help)
+    usage
+    ;;
+  *)
+    fail Unrecognized command $command, use help command for help
+    ;;
+esac
+
